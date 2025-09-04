@@ -15,12 +15,12 @@ def get_object_identifier(statement):
     """
     
     # Function
-    match = re.search(r"CREATE(?: OR REPLACE)? FUNCTION (.*?)\\(“, statement, re.IGNORECASE)
+    match = re.search(r"CREATE(?: OR REPLACE)? FUNCTION ([\w\.]+) \(", statement, re.IGNORECASE)
     if match:
         return ('FUNCTION', match.group(1).strip())
 
     # Table
-    match = re.search(r"CREATE TABLE (.*?)(?: \(|\n)", statement, re.IGNORECASE)
+    match = re.search(r"CREATE TABLE ([\w\.]+) \(", statement, re.IGNORECASE)
     if match:
         return ('TABLE', match.group(1).strip())
 
@@ -80,8 +80,14 @@ def parse_sql(filepath):
             
     return objects
 
+class CustomArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_help()
+        sys.stderr.write(f'error: {message}\n')
+        sys.exit(2)
+
 def main():
-    parser = argparse.ArgumentParser(description='Compare two SQL dump files or directories.')
+    parser = CustomArgumentParser(description='Compare two SQL dump files or directories.')
     parser.add_argument('-f', '--files', nargs=2, help='Two SQL files to compare.')
     parser.add_argument('-d', '--directories', nargs=2, help='Two directories to compare.')
     parser.add_argument('-s', '--syntax', choices=['pg15', 'pg16', 'gbq', 'sqlite3'], default='pg15', help='SQL syntax for the output.')
@@ -167,8 +173,7 @@ def parse_create_table(statement):
     table = {'name': None, 'columns': {}, 'constraints': {}}
     
     # Extract table name
-    match = re.search(r"CREATE TABLE (.*?)(?: \(|
-)", statement, re.IGNORECASE)
+    match = re.search(r"CREATE TABLE ([\w\.]+) \(", statement, re.IGNORECASE)
     if not match:
         return table
     table['name'] = match.group(1).strip()
