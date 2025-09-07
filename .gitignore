@@ -116,3 +116,6 @@ dmypy.json
 .pyre/
 
 refdata
+diff.sql
+new_dump.sql
+old_dump.sql

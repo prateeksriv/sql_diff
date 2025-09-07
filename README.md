@@ -67,12 +67,7 @@ To run the tests, execute the test script from the root of the project:
 python tests/test_sql_diff.py
 ```
 
-For more comprehensive test runs, you can use a test runner like `pytest`:
 
-```bash
-pip install pytest
-pytest
-```
 
 ## Building
 
@@ -94,31 +89,20 @@ This will create a `dist/` directory containing the source distribution (`.tar.g
 
 ## Usage
 
-The `sql-diff` tool can be used in two modes: file comparison and directory comparison.
-
-### Case 1: Comparing Two Files
+The `sql-diff` tool compares two SQL files or directories and generates a patch file.
 
 ```bash
-sql-diff -f <old_file.sql> <new_file.sql>
+sql-diff -p <previous_version> -n <next_version> [-o <output_file.sql>]
 ```
 
-This will compare the two specified SQL files and print the generated SQL patch to standard output.
+### Arguments
 
-### Case 2: Comparing Two Directories
+*   `-p, --prev`: The previous database schema file or directory.
+*   `-n, --next`: The next database schema file or directory.
+*   `-o, --output`: Optional. The output file path to store the diff output. If not provided, the output is sent to standard output.
 
-```bash
-sql-diff -d <old_directory> <new_directory>
-```
+The tool automatically detects whether the paths are files or directories. Both paths must be of the same type (either both files or both directories).
 
-This will recursively compare all `.sql` files in the two directories. It will compare files with the same relative path in each directory.
-
-### Options
-
-*   `-s, --syntax`: Specify the SQL syntax for the output.
-    *   `pg15` (default): PostgreSQL 15
-    *   `pg16`: PostgreSQL 16
-    *   `gbq`: Google BigQuery
-    *   `sqlite3`: SQLite 3
 
 ## Return Codes
 

@@ -22,3 +22,6 @@ dependencies = [
 
 [project.scripts]
 sql-diff = "sql_diff:main"
+
+[tool.setuptools]
+py-modules = ["sql_diff"]

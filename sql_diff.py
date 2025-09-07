@@ -13,7 +13,7 @@ def get_object_identifier(statement):
     Extracts a unique identifier for a SQL object from its statement.
     Returns a tuple like ('TABLE', 'public.my_table') or ('FUNCTION', 'public.my_function')
     """
-    
+
     # Function
     match = re.search(r"CREATE(?: OR REPLACE)? FUNCTION ([\w\.]+) \(", statement, re.IGNORECASE)
     if match:
@@ -40,10 +40,10 @@ def get_object_identifier(statement):
         return ('SEQUENCE', match.group(1).strip())
 
     # Constraint
-    match = re.search(r"ALTER TABLE .*? ADD CONSTRAINT (.*?) ", statement, re.IGNORECASE)
+    match = re.search(r"ALTER TABLE (?:ONLY )?([\w\.]+) ADD CONSTRAINT ([\w\.]+) ", statement, re.IGNORECASE)
     if match:
-        return ('CONSTRAINT', match.group(1).strip())
-        
+        return ('CONSTRAINT', match.group(1).strip(), match.group(2).strip())
+
     # Alter table
     match = re.search(r"ALTER TABLE (.*?) ", statement, re.IGNORECASE)
     if match:
@@ -88,23 +88,49 @@ class CustomArgumentParser(argparse.ArgumentParser):
 
 def main():
     parser = CustomArgumentParser(description='Compare two SQL dump files or directories.')
-    parser.add_argument('-f', '--files', nargs=2, help='Two SQL files to compare.')
-    parser.add_argument('-d', '--directories', nargs=2, help='Two directories to compare.')
-    parser.add_argument('-s', '--syntax', choices=['pg15', 'pg16', 'gbq', 'sqlite3'], default='pg15', help='SQL syntax for the output.')
+    parser.add_argument('-p', '--prev', required=True, help='The previous database schema file or directory.')
+    parser.add_argument('-n', '--next', required=True, help='The next database schema file or directory.')
+    parser.add_argument('-o', '--output', help='The output file path to store the diff output (default:stdout).')
     args = parser.parse_args()
 
-    if args.files:
-        old_dump, new_dump = args.files
-        diff, has_differences = compare_files(old_dump, new_dump, args.syntax)
-        if diff:
-            print('\n'.join(diff))
-        sys.exit(1 if has_differences else 0)
-    elif args.directories:
-        compare_directories(args.directories[0], args.directories[1], args.syntax)
-    else:
-        parser.print_help()
+    prev_path = args.prev
+    next_path = args.next
 
-def compare_files(old_dump, new_dump, syntax):
+    is_prev_file = os.path.isfile(prev_path)
+    is_next_file = os.path.isfile(next_path)
+    is_prev_dir = os.path.isdir(prev_path)
+    is_next_dir = os.path.isdir(next_path)
+
+    if (is_prev_file and is_next_file):
+        diff, has_differences = compare_files(prev_path, next_path)
+    elif (is_prev_dir and is_next_dir):
+        diff, has_differences = compare_directories(prev_path, next_path)
+    else:
+        if not (is_prev_file or is_prev_dir):
+            sys.stderr.write(f"Error: Previous path not found or is not a file/directory: {prev_path}\n")
+        if not (is_next_file or is_next_dir):
+            sys.stderr.write(f"Error: Next path not found or is not a file/directory: {next_path}\n")
+        if (is_prev_file and not is_next_file) or (is_prev_dir and not is_next_dir):
+            sys.stderr.write("Error: Both paths must be files or both must be directories.\n")
+        sys.exit(2)
+
+    output_stream = sys.stdout
+    if args.output:
+        try:
+            output_stream = open(args.output, 'w')
+        except IOError as e:
+            sys.stderr.write(f"Error opening output file: {e}\n")
+            sys.exit(2)
+    
+    if diff:
+        print('\n'.join(diff), file=output_stream)
+
+    if args.output:
+        output_stream.close()
+
+    sys.exit(1 if has_differences else 0)
+
+def compare_files(old_dump, new_dump):
     try:
         old_objects = parse_sql(old_dump)
         new_objects = parse_sql(new_dump)
@@ -130,21 +156,24 @@ def compare_files(old_dump, new_dump, syntax):
 
     # Removed objects
     for key in sorted(list(removed_keys)):
-        object_type, object_name = key
-        if object_type == 'TABLE':
-            diff.append(f"DROP TABLE IF EXISTS {object_name};")
-        elif object_type == 'FUNCTION':
-            diff.append(f"DROP FUNCTION IF EXISTS {object_name};")
-        elif object_type == 'INDEX':
-            diff.append(f"DROP INDEX IF EXISTS {object_name};")
-        elif object_type == 'VIEW':
-            diff.append(f"DROP VIEW IF EXISTS {object_name};")
-        elif object_type == 'SEQUENCE':
-            diff.append(f"DROP SEQUENCE IF EXISTS {object_name};")
-        elif object_type == 'CONSTRAINT':
-            diff.append(f"-- Cannot auto-generate DROP for CONSTRAINT {object_name}. Manual intervention required.")
+        object_type = key[0]
+        if object_type == 'CONSTRAINT':
+            _, table_name, constraint_name = key
+            diff.append(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name};")
         else:
-            diff.append(f"-- Don't know how to drop object of type {object_type} with name {object_name}")
+            object_name = key[1]
+            if object_type == 'TABLE':
+                diff.append(f"DROP TABLE IF EXISTS {object_name};")
+            elif object_type == 'FUNCTION':
+                diff.append(f"DROP FUNCTION IF EXISTS {object_name};")
+            elif object_type == 'INDEX':
+                diff.append(f"DROP INDEX IF EXISTS {object_name};")
+            elif object_type == 'VIEW':
+                diff.append(f"DROP VIEW IF EXISTS {object_name};")
+            elif object_type == 'SEQUENCE':
+                diff.append(f"DROP SEQUENCE IF EXISTS {object_name};")
+            else:
+                diff.append(f"-- Don't know how to drop object of type {object_type} with name {object_name}")
 
     # Added objects
     for key in sorted(list(added_keys)):
@@ -153,18 +182,22 @@ def compare_files(old_dump, new_dump, syntax):
     # Modified objects
     for key in sorted(list(common_keys)):
         if old_objects[key] != new_objects[key]:
-            diff.append(f"-- MODIFIED: {key[0]} {key[1]}")
+            # diff.append(f"-- MODIFIED: {key[0]} {key[1]}")
             if key[0] in ('FUNCTION', 'VIEW'):
                 diff.append(f"DROP {key[0]} IF EXISTS {key[1]};")
                 diff.append(f"{new_objects[key]};")
             elif key[0] == 'TABLE':
                 old_table = parse_create_table(old_objects[key])
                 new_table = parse_create_table(new_objects[key])
-                alter_statements = generate_alter_table(old_table, new_table, syntax)
+                alter_statements = generate_alter_table(old_table, new_table)
                 if alter_statements:
                     diff.extend(alter_statements)
             elif key[0] == 'INDEX':
                 diff.append(f"DROP INDEX IF EXISTS {key[1]};")
+                diff.append(f"{new_objects[key]};")
+            elif key[0] == 'CONSTRAINT':
+                _, table_name, constraint_name = key
+                diff.append(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name};")
                 diff.append(f"{new_objects[key]};")
 
     return diff, has_differences
@@ -192,7 +225,7 @@ def parse_create_table(statement):
     paren_level = 0
     current_part = ""
     for char in content:
-        if char == '(':
+        if char == '(': 
             paren_level += 1
         elif char == ')':
             paren_level -= 1
@@ -260,7 +293,7 @@ def parse_create_table(statement):
     return table
 
 
-def generate_alter_table(old_table, new_table, syntax):
+def generate_alter_table(old_table, new_table):
     alter_statements = []
     table_name = old_table['name']
 
@@ -279,7 +312,7 @@ def generate_alter_table(old_table, new_table, syntax):
         },
     }
 
-    templates = syntax_templates.get(syntax, syntax_templates['pg15'])
+    templates = syntax_templates['pg15']
 
     old_columns = old_table['columns']
     new_columns = new_table['columns']
@@ -363,7 +396,7 @@ def generate_alter_table(old_table, new_table, syntax):
     return alter_statements
 
 
-def compare_directories(old_dir, new_dir, syntax):
+def compare_directories(old_dir, new_dir):
     old_files = {}
     for root, _, files in os.walk(old_dir):
         for file in files:
@@ -391,30 +424,24 @@ def compare_directories(old_dir, new_dir, syntax):
     all_diffs = []
 
     for path in sorted(list(common_paths)):
-        all_diffs.append(f"-- Comparing files: {path}")
-        diff, has_differences = compare_files(old_files[path], new_files[path], syntax)
+        sys.stderr.write(f"Comparing files: {path}\n")
+        diff, has_differences = compare_files(old_files[path], new_files[path])
         if has_differences:
             differences_found = True
             all_diffs.extend(diff)
 
     for path in sorted(list(added_paths)):
-        all_diffs.append(f"-- New file: {path}")
+        sys.stderr.write(f"New file: {path}\n")
         with open(new_files[path], 'r') as f:
             all_diffs.append(f.read())
         differences_found = True
 
     for path in sorted(list(removed_paths)):
-        all_diffs.append(f"-- Removed file: {path}")
-        all_diffs.append(f"-- To remove the objects in this file, you may need to manually create DROP statements.")
+        sys.stderr.write(f"Removed file: {path}\n")
+        sys.stderr.write(f"To remove the objects in this file, you may need to manually create DROP statements.\n")
         differences_found = True
 
-    if all_diffs:
-        print('\n'.join(all_diffs))
-
-    if differences_found:
-        sys.exit(1)
-    else:
-        sys.exit(0)
+    return all_diffs, differences_found
 
 
 
